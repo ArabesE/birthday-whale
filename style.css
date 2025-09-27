@@ -1,6 +1,5 @@
 html,
 body {
-  height: 100%;
   margin: 0;
   padding: 0;
   width: 100vw;
@@ -32,7 +31,9 @@ body {
   opacity: 0;
   pointer-events: none;
   user-select: none;
-  text-shadow: 0 2px 8px #001122, 0 0 16px #4fd0e4;
+  text-shadow:
+    0 2px 8px #001122,
+    0 0 16px #4fd0e4;
   min-width: 100vw;
   padding: 0 5vw;
   box-sizing: border-box;
@@ -43,8 +44,8 @@ body {
 }
 
 #celebration-text {
-  color: #40e0d0;
-  text-shadow: 0 2px 12px #e0ffff, 0 0 24px #4fd0e4;
+  color: lightblue; /* Light blue celebration text */
+  text-shadow: none; /* Remove shadow specifically for celebration text */
   transition: opacity 1.2s;
 }
 

@@ -1,19 +1,20 @@
-// === 0. Celebration Sounds ===
-// For now, we'll use web audio synthesis instead of audio files
-// This creates beautiful whale-like sounds programmatically
-
 // --- 3D Birthday Whale Interactive Page ---
 // Uses: three.js, anime.js, canvas-confetti (all via CDN)
 
 // === 1. DOM Setup ===
+const isMobile = /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(navigator.userAgent);
 const hintText = document.getElementById("hint-text");
 const celebrationText = document.getElementById("celebration-text");
 
 // Create and insert the canvas for three.js
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  alpha: false,
+  powerPreference: "high-performance",
+});
 renderer.setClearColor(0x001122, 1);
 // Respect device pixel ratio for crisp rendering; cap to avoid overdraw on hiDPI
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.domElement.id = "three-canvas";
 document.body.appendChild(renderer.domElement);
@@ -41,12 +42,13 @@ camera.lookAt(0, lookAtY, 0);
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // === 3. Ocean Floor ===
-const oceanFloorGeo = new THREE.PlaneGeometry(40, 40, 64, 64);
+// Reduce subdivisions to lighten per-frame vertex updates
+const oceanFloorGeo = new THREE.PlaneGeometry(40, 40, 32, 32);
 const oceanFloorMat = new THREE.MeshPhongMaterial({
   color: 0x0c2340,
   shininess: 20,
@@ -139,6 +141,7 @@ const noteFrequencies = {
 };
 
 const activeBubbles = []; // Currently floating bubbles
+const BUBBLE_SPEED_Y = 1.8; // vertical speed multiplier
 const notesPopped = []; // Track which notes have been popped
 const whalemouth = { x: 0, y: 0.5, z: 2.5 }; // Whale's mouth position (y will be based on whaleGroup.position)
 let lastBubbleTime = 0;
@@ -146,17 +149,40 @@ let gameStarted = false;
 let lastHandledAt = -Infinity; // tracks last time we successfully handled a pop
 
 // === 6. Ambient Ocean Lighting ===
-const ambientLight = new THREE.AmbientLight(0x1e4a6b, 0.4);
+const ambientLight = new THREE.AmbientLight(0x1e4a6b, 0.55); // slightly brighter ambient
 scene.add(ambientLight);
 
 // Directional light (moonlight from above)
-const moonLight = new THREE.DirectionalLight(0x87ceeb, 0.6);
+const moonLight = new THREE.DirectionalLight(0x87ceeb, 0.8); // base moonlight
 moonLight.position.set(0, 10, 5);
 moonLight.castShadow = true;
 scene.add(moonLight);
 
+// Hemisphere light for natural ambient balance (sky vs ground)
+const hemiLight = new THREE.HemisphereLight(0x3a9bdc, 0x0b1d2d, 0.0);
+scene.add(hemiLight);
+
+// Warm front fill (pleasant key light from in front/right)
+const warmFill = new THREE.PointLight(0xffc48a, 0.0, 120, 1.5);
+warmFill.position.set(6, 4, 12);
+scene.add(warmFill);
+
+// Cool rim/back light to outline silhouette from behind
+const rimLight = new THREE.DirectionalLight(0x66e0ff, 0.0);
+rimLight.position.set(-6, 3, -8);
+scene.add(rimLight);
+
+// Subtle side accents for volume
+const sideLightL = new THREE.PointLight(0x4fd0e4, 0.0, 40, 2);
+sideLightL.position.set(-8, 1, 3);
+scene.add(sideLightL);
+const sideLightR = new THREE.PointLight(0x4fd0e4, 0.0, 40, 2);
+sideLightR.position.set(8, 1, 3);
+scene.add(sideLightR);
+
 // === 7. Celebration Light (initially off) ===
-const celebrationLight = new THREE.PointLight(0x00ffff, 0, 50, 2);
+// Softer teal celebration light with long reach and gentle decay
+const celebrationLight = new THREE.PointLight(0x40e0d0, 0, 160, 1);
 celebrationLight.position.set(0, 8, 0);
 scene.add(celebrationLight);
 
@@ -165,26 +191,36 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 // === 6. Bubble Creation and Management ===
-function createBubble() {
-  // Create bubble geometry
-  const bubbleGeo = new THREE.SphereGeometry(0.4, 16, 16); // slightly bigger bubbles
-  const bubbleMat = new THREE.MeshBasicMaterial({
-    color: 0x40e0d0,
-    transparent: true,
-    opacity: 0.8,
-  });
-  const bubble = new THREE.Mesh(bubbleGeo, bubbleMat);
+// Shared bubble geometry to reduce allocations; lower segment count for perf
+const bubbleGeoShared = new THREE.SphereGeometry(0.55, 16, 12);
 
-  // Start at whale's mouth with slight randomization
-  bubble.position.set(
-    whalemouth.x + (Math.random() - 0.5) * 0.5,
-    whaleGroup.position.y + 0.5,
-    whalemouth.z + (Math.random() - 0.5) * 0.3
-  );
+function createBubble(opts = {}) {
+  // Cheaper standard material with transparency; keep polished look via lighting
+  const bubbleMat = new THREE.MeshStandardMaterial({
+    color: 0x7fe9e1,
+    metalness: 0.0,
+    roughness: 0.2,
+    transparent: true,
+    opacity: 0.7,
+    emissive: 0x0a2024,
+    emissiveIntensity: 0.2,
+  });
+  const bubble = new THREE.Mesh(bubbleGeoShared, bubbleMat);
+
+  // Start at whale's mouth with slight randomization unless custom position provided
+  if (opts.position) {
+    bubble.position.set(opts.position.x, opts.position.y, opts.position.z);
+  } else {
+    bubble.position.set(
+      whalemouth.x + (Math.random() - 0.5) * 0.5,
+      whaleGroup.position.y + 0.5,
+      whalemouth.z + (Math.random() - 0.5) * 0.3
+    );
+  }
 
   // Add bubble properties (no specific note - determined on pop)
   bubble.userData = {
-    velocity: {
+    velocity: opts.initialVelocity || {
       x: (Math.random() - 0.5) * 0.005,
       y: 0.015 + Math.random() * 0.008, // Faster upward (0.015-0.023) so they float off-screen
       z: (Math.random() - 0.5) * 0.003,
@@ -196,11 +232,68 @@ function createBubble() {
   scene.add(bubble);
   activeBubbles.push(bubble);
 
-  // Add bubble light
-  const light = new THREE.PointLight(0x40e0d0, 0.6, 2, 2);
-  light.position.copy(bubble.position);
-  scene.add(light);
-  bubble.userData.light = light;
+  return bubble;
+}
+
+// Create a cluster of bubbles arranged in a heart shape near the whale's mouth
+function createHeartBubbles() {
+  const baseY = whaleGroup.position.y + 0.5; // mouth base level
+  const baseX = whalemouth.x;
+  const baseZ = whalemouth.z;
+  const count = 28; // several bubbles
+  const s = 0.25; // larger heart size to reduce clustering
+
+  // Prepare targets first (no allocations inside rAF loop)
+  const targets = [];
+  for (let i = 0; i < count; i++) {
+    const t = (i / count) * Math.PI * 2;
+    const hx = 16 * Math.pow(Math.sin(t), 3);
+    const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    targets.push({
+      x: baseX + hx * s + (Math.random() - 0.5) * 0.06,
+      y: baseY + hy * s + (Math.random() - 0.5) * 0.04,
+      z: baseZ + (Math.random() - 0.5) * 0.08,
+    });
+  }
+
+  let idx = 0;
+  const perFrame = 4; // spawn in small batches to avoid frame spike
+  function spawnBatch() {
+    for (let n = 0; n < perFrame && idx < targets.length; n++, idx++) {
+      const { x, y, z } = targets[idx];
+      const bub = createBubble({
+        position: { x, y, z },
+        initialVelocity: {
+          x: (Math.random() - 0.5) * 0.003,
+          y: 0.016 + Math.random() * 0.006,
+          z: (Math.random() - 0.5) * 0.003,
+        },
+      });
+
+      // Small pop-in using lightweight anime tweens
+      bub.scale.set(0.6, 0.6, 0.6);
+      anime({
+        targets: bub.scale,
+        x: 1.2,
+        y: 1.2,
+        z: 1.2,
+        duration: 200,
+        easing: "easeOutBack",
+        complete: () => {
+          anime({
+            targets: bub.scale,
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+            duration: 240,
+            easing: "easeOutQuad",
+          });
+        },
+      });
+    }
+    if (idx < targets.length) requestAnimationFrame(spawnBatch);
+  }
+  requestAnimationFrame(spawnBatch);
 }
 
 function updateBubbles() {
@@ -210,11 +303,10 @@ function updateBubbles() {
 
     // Update position with bubble physics
     bubble.position.x += data.velocity.x;
-    bubble.position.y += data.velocity.y;
+    bubble.position.y += data.velocity.y * BUBBLE_SPEED_Y;
     bubble.position.z += data.velocity.z;
 
-    // Update light position
-    data.light.position.copy(bubble.position);
+    // (light removed for performance)
 
     // Add some wobble
     data.life++;
@@ -223,8 +315,7 @@ function updateBubbles() {
 
     // Remove bubble if it's too old or too high
     if (data.life > data.maxLife || bubble.position.y > 8) {
-      scene.remove(bubble);
-      scene.remove(data.light);
+      disposeBubble(bubble);
       activeBubbles.splice(i, 1);
     }
   }
@@ -243,7 +334,7 @@ function getIntersects(event) {
   mouse.x = ((x - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((y - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  return raycaster.intersectObjects(activeBubbles);
+  return raycaster.intersectObjects(activeBubbles, false);
 }
 
 let hintTimeout,
@@ -303,7 +394,9 @@ function ensureAudioUnlocked() {
 async function loadMusicbox() {
   initAudio();
   if (musicboxBuffer) return musicboxBuffer;
-  const res = await fetch("sounds/musicbox.wav");
+  // Use build-resolved URL so it works in production (hashed asset path)
+  const musicUrl = new URL("./sounds/musicbox.wav", import.meta.url);
+  const res = await fetch(musicUrl);
   const arrayBuffer = await res.arrayBuffer();
   musicboxBuffer = await audioContext.decodeAudioData(arrayBuffer);
   return musicboxBuffer;
@@ -440,7 +533,6 @@ async function onPointerDown(event) {
 
     // Add to popped notes
     notesPopped.push(nextNote);
-    console.log(`Popped bubble! Playing note: ${nextNote} (${notesPopped.length}/${TOTAL_NOTES})`);
 
     // Always hide hint when bubble is popped
     if (hintShown) {
@@ -463,8 +555,7 @@ async function onPointerDown(event) {
       duration: 200,
       easing: "easeOutQuad",
       complete: () => {
-        scene.remove(bubble);
-        scene.remove(data.light);
+        disposeBubble(bubble);
         const index = activeBubbles.indexOf(bubble);
         if (index > -1) activeBubbles.splice(index, 1);
       },
@@ -481,15 +572,20 @@ async function onPointerDown(event) {
   }
 }
 
-renderer.domElement.addEventListener("pointerdown", onPointerDown);
+// Use non-passive only where we may call preventDefault on hit
+renderer.domElement.addEventListener("pointerdown", onPointerDown, { passive: false });
 // Fallback: some mobile browsers may delay/suppress pointerdown on first tap
-renderer.domElement.addEventListener("click", (e) => {
-  // If celebration hasn't started and we didn't handle pointerdown, try handling via click
-  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-  if (!celebrationStarted && now - lastHandledAt > 50) {
-    onPointerDown(e);
-  }
-});
+renderer.domElement.addEventListener(
+  "click",
+  (e) => {
+    // If celebration hasn't started and we didn't handle pointerdown, try handling via click
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (!celebrationStarted && now - lastHandledAt > 50) {
+      onPointerDown(e);
+    }
+  },
+  { passive: true }
+);
 
 // === 11. Celebration Sequence ===
 function triggerCelebration() {
@@ -506,11 +602,45 @@ function triggerCelebration() {
     },
   });
 
-  // 2. Celebration light activates
+  // 2. Celebration lighting setup
+  // Soften top light, raise natural ambient, add warm fill and cool rim for a pleasant look
   anime({
     targets: celebrationLight,
-    intensity: 15,
-    duration: 1500,
+    intensity: 45, // bright but not harsh
+    duration: 1400,
+    easing: "easeInOutQuad",
+    update: () => {
+      renderer.toneMappingExposure = 1.1; // gentle overall lift
+    },
+  });
+  anime({
+    targets: moonLight,
+    intensity: 0.55, // reduce surgical top-down feel
+    duration: 1000,
+    easing: "easeInOutQuad",
+  });
+  anime({
+    targets: hemiLight,
+    intensity: 0.85, // more natural ambient balance
+    duration: 1600,
+    easing: "easeInOutQuad",
+  });
+  anime({
+    targets: warmFill,
+    intensity: 2.2, // warm, pleasant key
+    duration: 1600,
+    easing: "easeInOutQuad",
+  });
+  anime({
+    targets: rimLight,
+    intensity: 0.8, // subtle cool rim highlight
+    duration: 1600,
+    easing: "easeInOutQuad",
+  });
+  anime({
+    targets: [sideLightL, sideLightR],
+    intensity: 0.9,
+    duration: 1600,
     easing: "easeInOutQuad",
   });
 
@@ -525,11 +655,18 @@ function triggerCelebration() {
   });
 
   // 5. Ocean floor becomes bioluminescent
+  // Animate emissive by lerping color to avoid direct object mutation issues
+  const from = new THREE.Color(oceanFloorMat.emissive.getHex());
+  const to = new THREE.Color(0x003366);
+  const lerpState = { t: 0 };
   anime({
-    targets: oceanFloorMat,
-    emissive: new THREE.Color(0x003366),
+    targets: lerpState,
+    t: 1,
     duration: 2000,
     easing: "easeInOutQuad",
+    update: () => {
+      oceanFloorMat.emissive.copy(from).lerp(to, lerpState.t);
+    },
   });
 
   // 6. Underwater confetti (bubbles)
@@ -543,6 +680,10 @@ function triggerCelebration() {
     opacity: 1,
     duration: 1500,
     easing: "easeInOutQuad",
+    complete: () => {
+      // After text fades in, spit heart bubbles
+      createHeartBubbles();
+    },
   });
 }
 
@@ -654,14 +795,17 @@ function animate() {
   updateBubbles();
 
   // Ocean floor wave animation
+  // Throttle floor updates to every other frame
   const positions = oceanFloor.geometry.attributes.position;
-  for (let i = 0; i < positions.count; i++) {
-    const x = positions.getX(i);
-    const z = positions.getZ(i);
-    const wave = Math.sin(time * 0.5 + x * 0.1) * Math.cos(time * 0.3 + z * 0.1) * 0.1;
-    positions.setY(i, wave);
+  if ((Math.floor(time * 60) & 1) === 0) {
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i);
+      const z = positions.getZ(i);
+      const wave = Math.sin(time * 0.5 + x * 0.1) * Math.cos(time * 0.3 + z * 0.1) * 0.1;
+      positions.setY(i, wave);
+    }
+    positions.needsUpdate = true;
   }
-  positions.needsUpdate = true;
 
   renderer.render(scene, camera);
 }
@@ -681,5 +825,25 @@ lastBubbleTime = Date.now();
 // Auto-start bubble generation after 2.5 seconds
 setTimeout(() => {
   gameStarted = true;
-  console.log("Bubble generation started automatically!");
 }, 2500);
+
+// === 14. Utilities ===
+function disposeBubble(bubble) {
+  if (!bubble) return;
+  scene.remove(bubble);
+  // dispose geometry/material to free GPU memory
+  if (bubble.geometry) {
+    try {
+      bubble.geometry.dispose();
+    } catch {
+      /* noop */
+    }
+  }
+  if (bubble.material) {
+    try {
+      bubble.material.dispose();
+    } catch {
+      /* noop */
+    }
+  }
+}
