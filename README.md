@@ -10,8 +10,3 @@ A tiny Vite-based interactive 3D birthday page featuring a friendly whale, music
 - Preview build: `pnpm preview`
 
 This project loads three.js, anime.js, and canvas-confetti via CDN in `index.html`, so there are no runtime npm deps beyond Vite.
-
-## Notes
-
-- Cleanup adds editor/lint/format configs only; functionality is unchanged.
-- If you want formatting and linting, install Prettier and ESLint dev deps and run the scripts in `package.json` (see below).
