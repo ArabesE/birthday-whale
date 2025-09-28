@@ -24,7 +24,9 @@ body {
   top: 18vh;
   transform: translateX(-50%);
   color: #87ceeb;
-  font-family: "Cherry Bomb One", "Rubik", "Segoe UI", "Arial", sans-serif;
+  font-family:
+    "Cherry Bomb One", "ZCOOL KuaiLe", "Noto Sans SC", "Rubik", "Segoe UI", "Arial", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: clamp(1.7rem, 5vw, 3.2rem);
   text-align: center;
   z-index: 10;
